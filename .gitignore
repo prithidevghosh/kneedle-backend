@@ -1,0 +1,30 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+kneedle-backend/
+*/bin/activate
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Environment variables
+.env
+*.env
+
+# Temp files
+*.tmp
+tmp/
+
+# IDE
+.vscode/
+.idea/
+*.swp
