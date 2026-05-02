@@ -237,6 +237,6 @@ def analyse_gait(video_path: str) -> tuple[GaitMetrics, list[str]]:
         confidence=round(float(np.mean(confidences)), 2) if confidences else 0.0
     )
 
-    key_frames = extract_key_frames(video_path, num_frames=4)
+    key_frames = extract_key_frames(video_path, num_frames=2)
 
     return metrics, key_frames

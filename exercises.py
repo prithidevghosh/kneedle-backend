@@ -1,14 +1,30 @@
 """
 Knee OA exercise library.
-Source: 2019 ACR/Arthritis Foundation Guideline for Management of
-Osteoarthritis of the Hand, Hip, and Knee.
-Kolasinski et al., Arthritis Care & Research, 2020.
-DOI: 10.1002/acr.24131
+
+Primary source:
+  2019 ACR/Arthritis Foundation Guideline for Management of Osteoarthritis
+  of the Hand, Hip, and Knee. Kolasinski et al., Arthritis Care & Research, 2020.
+  DOI: 10.1002/acr.24131
+
+Supplementary sources (for exercises not detailed in the ACR/AF guideline):
+  - OARSI 2019 Guidelines for non-surgical management of knee, hip, and
+    polyarticular OA. Bannuru et al., Osteoarthritis and Cartilage, 2019.
+    DOI: 10.1016/j.joca.2019.06.011
+  - NICE NG226 (2022): Osteoarthritis in over 16s — diagnosis and management.
+  - GLA:D® (Good Life with osteoArthritis in Denmark) neuromuscular exercise
+    program. Skou & Roos, BMC Musculoskelet Disord, 2017. DOI: 10.1186/s12891-017-1439-y
+  - AAOS Knee Conditioning Program (OrthoInfo, 2017).
+  - Al-Johani et al. Comparative study of hamstring + quadriceps strengthening
+    in knee OA. J Phys Ther Sci, 2014. PMCID: PMC4085199
+  - Bartels et al. Aquatic exercise for knee/hip OA. Cochrane Database, 2016.
+  - Shull et al. Toe-out gait modification reduces knee adduction moment.
+    J Orthop Res, 2013.
 
 Each exercise includes:
-- Clinical indication (which gait finding it addresses)
+- Clinical indication (which gait finding from gait_analyzer.py it addresses:
+  knee flexion angle, toe-out angle, trunk lean, cadence, asymmetry)
 - Contraindication (when NOT to prescribe it)
-- Evidence level from the guideline
+- Evidence level with citation
 """
 
 EXERCISE_LIBRARY = [
@@ -107,6 +123,126 @@ EXERCISE_LIBRARY = [
         "clinical_indication": "General knee OA, poor balance, high pain. Tai Chi is strongly recommended by ACR/AF 2019 specifically for knee OA.",
         "contraindication": "None",
         "evidence": "Strong recommendation — ACR/AF 2019 (Tai Chi specifically for knee OA)"
+    },
+    {
+        "id": "quad_set",
+        "name": "হাঁটু চাপ ব্যায়াম",
+        "name_en": "Quadriceps Setting (Isometric)",
+        "reps": "১০ সেকেন্ড×১০",
+        "reps_en": "10 seconds×10",
+        "description": "পিঠে শুয়ে পা সোজা রেখে হাঁটুর নিচে গুটানো তোয়ালে রাখুন। উরুর পেশি শক্ত করে হাঁটু দিয়ে তোয়ালে চাপ দিন, ১০ সেকেন্ড ধরে রাখুন।",
+        "description_en": "Lie on back with rolled towel under knee. Tighten thigh muscle, pressing knee down into towel. Hold 10 seconds.",
+        "clinical_indication": "Severe knee pain or earliest-stage rehab. Preserves quadriceps strength — the primary muscular protector against OA progression — when active ROM exercises are too painful. Foundational entry exercise.",
+        "contraindication": "None — safe at all severity levels",
+        "evidence": "AAOS Knee Conditioning Program; ACR/AF 2019 (strengthening)"
+    },
+    {
+        "id": "heel_slide",
+        "name": "গোড়ালি টানা ব্যায়াম",
+        "name_en": "Heel Slide",
+        "reps": "১৫×২",
+        "reps_en": "15×2",
+        "description": "পিঠে শুয়ে পা সোজা রাখুন। ধীরে ধীরে এক পায়ের গোড়ালি নিতম্বের দিকে টেনে আনুন যতদূর আরামে সম্ভব, ৫ সেকেন্ড থামুন, তারপর ফেরান।",
+        "description_en": "Lie on back, legs straight. Slowly slide one heel toward buttock to bend knee as far as comfortable, hold 5 seconds, slide back.",
+        "clinical_indication": "Reduced knee flexion ROM measured by MediaPipe. Gentle non-weight-bearing progression of flexion angle; safer than seated knee flexion for acute pain.",
+        "contraindication": "Recent knee surgery without surgeon clearance",
+        "evidence": "AAOS Knee Conditioning Program; Kaiser Permanente knee OA protocol"
+    },
+    {
+        "id": "mini_squat",
+        "name": "মিনি স্কোয়াট",
+        "name_en": "Mini Squat",
+        "reps": "১০×৩",
+        "reps_en": "10×3",
+        "description": "চেয়ারের পেছনে দাঁড়িয়ে চেয়ার ধরে রাখুন। পা কাঁধ-প্রস্থ ফাঁকা। হাঁটু মাত্র ৩০–৪৫° ভাঁজ করুন (যেন বসতে যাচ্ছেন), হাঁটু আঙুলের উপর রাখুন, তারপর সোজা হন।",
+        "description_en": "Stand behind chair holding it for support, feet shoulder-width. Bend knees only 30–45° as if about to sit, keeping knees aligned over toes, then stand.",
+        "clinical_indication": "Quadriceps weakness with preserved ambulation. Closed-chain functional strengthening (load-bearing) which transfers to gait better than open-chain SLR alone.",
+        "contraindication": "Pain >5/10 during the movement; knee instability or giving-way",
+        "evidence": "GLA:D Program (Skou & Roos 2017, BMC Musculoskelet Disord); ACR/AF 2019 (strong recommendation, strengthening)"
+    },
+    {
+        "id": "step_up",
+        "name": "সিঁড়িতে পা তোলা ব্যায়াম",
+        "name_en": "Step-Up",
+        "reps": "১০×২ প্রতি পায়ে",
+        "reps_en": "10×2 each leg",
+        "description": "একটি নিচু সিঁড়ি বা ১০–১৫ সেমি উঁচু বাক্সে এক পা রেখে শরীর তুলে উঠুন, তারপর ধীরে নামুন। রেলিং বা দেওয়াল ধরে রাখুন।",
+        "description_en": "Place one foot on a low step (10–15 cm) and rise up onto it, then lower slowly. Hold rail or wall for support.",
+        "clinical_indication": "Gait asymmetry and low cadence. Replicates stair-climb demand and trains single-limb support — directly addresses asymmetric step length and weight transfer detected by frame analysis.",
+        "contraindication": "Severe pain on weight bearing; significant balance impairment without supervision",
+        "evidence": "AAOS Knee Conditioning Program; ACR/AF 2019 (strengthening)"
+    },
+    {
+        "id": "standing_hamstring_curl",
+        "name": "দাঁড়িয়ে হাঁটু পেছনে ভাঁজ",
+        "name_en": "Standing Hamstring Curl",
+        "reps": "১২×২ প্রতি পায়ে",
+        "reps_en": "12×2 each leg",
+        "description": "চেয়ার ধরে সোজা দাঁড়িয়ে এক পায়ের হাঁটু ভাঁজ করে গোড়ালি নিতম্বের দিকে আনুন, ২ সেকেন্ড ধরুন, ধীরে নামান।",
+        "description_en": "Stand holding chair. Bend one knee, bringing heel toward buttock, hold 2 seconds, lower slowly.",
+        "clinical_indication": "Hamstring weakness with reduced flexion ROM. Combined hamstring + quadriceps strengthening shown more effective than quad-only for pain and function in knee OA.",
+        "contraindication": "Acute hamstring strain",
+        "evidence": "Al-Johani et al. 2014 (J Phys Ther Sci, PMC4085199); ACR/AF 2019 (strengthening)"
+    },
+    {
+        "id": "stationary_cycling",
+        "name": "স্থির সাইকেল চালানো",
+        "name_en": "Stationary Cycling",
+        "reps": "১৫–২০ মিনিট",
+        "reps_en": "15–20 minutes",
+        "description": "স্থির সাইকেলে কম রেজিস্ট্যান্সে চালান। সিটের উচ্চতা এমন রাখুন যাতে প্যাডেল সর্বনিম্ন অবস্থানে হাঁটু প্রায় সোজা হয় (২৫–৩৫° ভাঁজ)।",
+        "description_en": "Cycle on stationary bike at low resistance. Set seat high so knee is nearly straight (25–35° bend) at the lowest pedal position to minimize joint load.",
+        "clinical_indication": "General deconditioning, low cadence, reduced knee flexion ROM. Low-impact aerobic work that simultaneously cycles flexion through a controlled range — addresses both endurance and ROM.",
+        "contraindication": "Knee pain >4/10 during cycling; severe patellofemoral OA may require seat adjustment",
+        "evidence": "ACR/AF 2019 (strong recommendation, aerobic exercise); OARSI 2019 (core treatment)"
+    },
+    {
+        "id": "aquatic_walking",
+        "name": "জলে হাঁটার ব্যায়াম",
+        "name_en": "Aquatic Walking",
+        "reps": "২০–৩০ মিনিট",
+        "reps_en": "20–30 minutes",
+        "description": "বুক-গভীর গরম জলে ধীরে সামনে ও পেছনে হাঁটুন। জলের প্লবতা হাঁটুর উপর চাপ ৫০–৯০% কমায়।",
+        "description_en": "Walk slowly forward and backward in chest-deep warm water. Buoyancy reduces knee load by 50–90%, allowing pain-free gait practice.",
+        "clinical_indication": "High pain, severe OA, high BMI, or marked gait asymmetry that prevents land-based walking. Meta-analyses show aquatic exercise relieves pain at least as well as land-based.",
+        "contraindication": "Open wounds, active skin or urinary infection, uncontrolled cardiac disease, fear of water",
+        "evidence": "ACR/AF 2019 (strong recommendation); OARSI 2019; Bartels et al. Cochrane 2016"
+    },
+    {
+        "id": "clamshell",
+        "name": "শামুক ব্যায়াম",
+        "name_en": "Clamshell",
+        "reps": "১৫×২ প্রতি পাশে",
+        "reps_en": "15×2 each side",
+        "description": "পাশে শুয়ে হাঁটু ৪৫° ভাঁজ করুন, পা একসাথে রাখুন। পা একসাথে রেখে উপরের হাঁটু শামুকের মতো খুলুন, ২ সেকেন্ড ধরে রাখুন, নামান।",
+        "description_en": "Lie on side with knees bent 45°, feet together. Keeping feet touching, lift top knee like a clamshell opening, hold 2 seconds, lower.",
+        "clinical_indication": "Trunk lean and dynamic knee valgus. Strengthens gluteus medius and hip external rotators, which control frontal-plane knee alignment during gait — addresses lateral trunk lean.",
+        "contraindication": "Total hip replacement (violates posterior precautions in early phase)",
+        "evidence": "GLA:D neuromuscular protocol; ACR/AF 2019 (hip strengthening for knee OA)"
+    },
+    {
+        "id": "glute_bridge",
+        "name": "সেতু ব্যায়াম",
+        "name_en": "Glute Bridge",
+        "reps": "১২×২",
+        "reps_en": "12×2",
+        "description": "পিঠে শুয়ে হাঁটু ভাঁজ করে পা মাটিতে রাখুন। নিতম্ব চেপে ধরে কোমর উপরে তুলুন যেন কাঁধ থেকে হাঁটু সরলরেখা হয়, ৩ সেকেন্ড ধরে রাখুন, নামান।",
+        "description_en": "Lie on back, knees bent, feet flat. Squeeze glutes and lift hips so shoulders, hips, and knees form a straight line. Hold 3 seconds, lower.",
+        "clinical_indication": "Gait asymmetry and trunk lean. Activates posterior chain (glutes, hamstrings) which stabilize the pelvis during single-limb support and reduce compensatory trunk lean.",
+        "contraindication": "Acute lower back pain; pregnancy beyond 2nd trimester (supine position)",
+        "evidence": "GLA:D neuromuscular protocol; ACR/AF 2019 (strengthening)"
+    },
+    {
+        "id": "hamstring_stretch",
+        "name": "হ্যামস্ট্রিং স্ট্রেচ",
+        "name_en": "Supine Hamstring Stretch",
+        "reps": "৩০ সেকেন্ড×৩",
+        "reps_en": "30 seconds×3",
+        "description": "পিঠে শুয়ে এক পায়ের পাতায় তোয়ালে বা চাদর জড়িয়ে দু-হাতে ধরুন। পা সোজা রেখে উপরে তুলুন যতদূর উরুর পেছনে আরামদায়ক টান অনুভব হয়। ৩০ সেকেন্ড ধরে রাখুন।",
+        "description_en": "Lie on back. Loop a towel around one foot, hold both ends. Keeping leg straight, raise it until you feel a gentle stretch behind the thigh. Hold 30 seconds.",
+        "clinical_indication": "Reduced terminal knee extension and short stride length. Tight hamstrings limit full knee extension during late stance and shorten step length — both visible in MediaPipe frame analysis.",
+        "contraindication": "Sciatica or radicular leg pain",
+        "evidence": "AAOS Knee Conditioning Program; ACR/AF 2019 (flexibility)"
     }
 ]
 

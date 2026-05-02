@@ -2,7 +2,7 @@ def handle_health() -> dict:
     return {
         "status": "running",
         "service": "Kneedle Backend",
-        "model": "gemma4:12b",
+        "model": "gemma4:e4b",
         "message": "গেটমিত্র সার্ভার চালু আছে"
     }
 

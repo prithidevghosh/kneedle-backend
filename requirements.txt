@@ -1,3 +1,4 @@
+# --- Direct dependencies ---
 fastapi==0.115.0
 uvicorn==0.30.6
 python-multipart==0.0.12
@@ -6,3 +7,30 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 ollama==0.3.3
 pydantic==2.8.2
+
+# --- FastAPI / Starlette stack ---
+starlette==0.38.6
+anyio==4.13.0
+sniffio==1.3.1
+click==8.3.3
+h11==0.16.0
+
+# --- Pydantic internals ---
+pydantic-core==2.20.1
+annotated-types==0.7.0
+typing-extensions==4.15.0
+
+# --- Ollama HTTP client ---
+httpx==0.27.2
+httpcore==1.0.9
+certifi==2026.4.22
+idna==3.13
+
+# --- MediaPipe internals ---
+protobuf==4.25.9
+absl-py==2.4.0
+attrs==26.1.0
+flatbuffers==25.12.19
+
+# --- Misc ---
+packaging==26.2

@@ -33,12 +33,31 @@ class AnalysisResponse(BaseModel):
     fix_desc: str              # Bengali — how to do the correction
     fix_title_en: str          # English
     fix_desc_en: str           # English
-    exercises: list[Exercise]  # 2 exercises max
+    exercises: list[Exercise]  # 3-4 exercises, severity-filtered
     active_joint: str          # "right_knee" | "left_knee" | "hips" | "ankles"
     symmetry_score: float      # from MediaPipe
     session_number: int        # passed in from app
     thinking: Optional[str]    # Gemma 4 reasoning chain — logged, not shown to user
     metrics: GaitMetrics       # raw measurements for writeup/debugging
+
+    # Severity-aware patient-facing fields
+    severity: str = "moderate"            # "mild" | "moderate" | "severe"
+    symmetry_band: str = "fair"           # "good" | "fair" | "poor"
+    symmetry_meaning: str = ""            # Localized interpretation of symmetry score
+    symmetry_meaning_en: str = ""
+    empathy_line: str = ""                # One warm sentence (localized)
+    empathy_line_en: str = ""
+    frequency: str = ""                   # e.g. "প্রতিদিন একবার, ২ সপ্তাহ"
+    frequency_en: str = ""
+    pain_rule: str = ""                   # "Stop if pain >5/10" (localized)
+    pain_rule_en: str = ""
+    red_flags: str = ""                   # When to seek medical care (localized)
+    red_flags_en: str = ""
+    referral_recommended: bool = False    # True for severe cases
+    referral_text: str = ""               # In-person consult message (localized)
+    referral_text_en: str = ""
+    complementary_actions: str = ""       # Heat/weight/sleeve advice (localized)
+    complementary_actions_en: str = ""
 
 
 class AnalyseRequest(BaseModel):

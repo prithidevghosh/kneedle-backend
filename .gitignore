@@ -28,3 +28,10 @@ tmp/
 .vscode/
 .idea/
 *.swp
+*.md
+.cursorrules
+*.mcp.json
+*.opencode.json
+*.windsurfrules
+settings.json
+mcp.json

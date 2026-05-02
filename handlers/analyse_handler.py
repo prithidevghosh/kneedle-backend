@@ -53,7 +53,7 @@ async def handle_analyse(
             )
 
         # Layer 2 — Gemma 4: clinical reasoning over measurements + frames
-        logger.info("Calling Gemma 4 12b for clinical reasoning...")
+        logger.info("Calling Gemma4:E4B for clinical reasoning...")
         result = run_gemma_analysis(metrics, key_frames, age, knee, lang, session_number)
 
         if result.thinking:
