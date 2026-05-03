@@ -24,6 +24,7 @@ class Exercise(BaseModel):
     reps_en: str        # English e.g. "10×3"
     description: str    # Bengali instructions
     reason: str = ""    # why Gemma 4 chose this exercise for this patient
+    video_url: str = ""
 
 
 class AnalysisResponse(BaseModel):

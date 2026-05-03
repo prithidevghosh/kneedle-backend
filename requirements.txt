@@ -20,6 +20,9 @@ pydantic-core==2.20.1
 annotated-types==0.7.0
 typing-extensions==4.15.0
 
+# --- HF Space client (used when INFERENCE_BACKEND="hf_space") ---
+gradio_client>=1.3.0
+
 # --- Ollama HTTP client ---
 httpx==0.27.2
 httpcore==1.0.9

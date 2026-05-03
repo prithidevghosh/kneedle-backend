@@ -1,5 +1,5 @@
 """
-Gemma 4 26b via Ollama — multimodal gait reasoning.
+Gemma 4 E4B — multimodal gait reasoning.
 
 Architecture:
 - MediaPipe provides hard measurements (what the numbers are)
@@ -9,8 +9,9 @@ Architecture:
   for severe cases even if the model hallucinates.
 - Thinking mode enabled — reasoning chain logged for writeup
 
-Gemma 4 model used: gemma4:e4b
-Ollama must be running: ollama serve
+Backends:
+  "local"    — Ollama on this machine  (ollama serve must be running)
+  "hf_space" — Hugging Face Space      (set HF_SPACE_URL below)
 """
 
 import ollama
@@ -21,6 +22,17 @@ from models import GaitMetrics, AnalysisResponse, Exercise
 from exercises import get_exercise_by_id, EXERCISE_LIBRARY
 
 logger = logging.getLogger(__name__)
+
+# ── Backend selector ──────────────────────────────────────────────────────────
+# Change this one variable to switch inference backends:
+#   "local"    → Ollama (ollama serve must be running)
+#   "hf_space" → Hugging Face Space
+INFERENCE_BACKEND = "local"
+
+# Only used when INFERENCE_BACKEND = "hf_space"
+# Format: "your-hf-username/your-space-name"  e.g. "johndoe/kneedle-gemma"
+HF_SPACE_URL = "prithvigg/kneedle-gemma"
+# ─────────────────────────────────────────────────────────────────────────────
 
 OLLAMA_MODEL = "gemma4:e4b"
 
@@ -295,6 +307,7 @@ def _build_exercise_obj(ex_def: dict, reason: str) -> Exercise:
         reps_en=ex_def["reps_en"],
         description=ex_def["description"],
         reason=reason,
+        video_url=ex_def.get("video_url", ""),
     )
 
 
@@ -328,6 +341,81 @@ def _localized(data: dict, key: str, fallback: str) -> str:
     return val if isinstance(val, str) and val.strip() else fallback
 
 
+def _call_via_ollama(
+    system_prompt: str,
+    user_prompt: str,
+    frames_b64: list[str],
+) -> tuple[str, str]:
+    """Run inference locally via Ollama. Returns (raw_content, thinking)."""
+    import concurrent.futures
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt, "images": frames_b64},
+    ]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            ollama.chat,
+            model=OLLAMA_MODEL,
+            messages=messages,
+            format="json",
+            options={
+                "temperature": 0.4,
+                "top_p": 0.9,
+                "top_k": 40,
+                "seed": 42,
+                "num_predict": 2500,
+                "num_ctx": 16384,
+                "num_gpu": 99,
+            },
+        )
+        try:
+            response = future.result(timeout=180)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError("Ollama timed out after 180s")
+
+    if response.get("done_reason", "") == "length":
+        logger.warning("Gemma hit num_predict limit — response may be truncated")
+
+    thinking = response["message"].get("thinking", "")
+    raw_content = response["message"]["content"]
+    logger.info(f"Ollama raw content (first 300 chars): {raw_content[:300]!r}")
+    return raw_content, thinking
+
+
+def _call_via_hf_space(
+    system_prompt: str,
+    user_prompt: str,
+    frames_b64: list[str],
+) -> tuple[str, str]:
+    """Run inference via Hugging Face Space. Returns (raw_content, thinking)."""
+    try:
+        from gradio_client import Client
+    except ImportError:
+        raise RuntimeError("gradio_client not installed. Run: pip install gradio_client")
+
+    # Strip <|think|> — raw transformers can't separate thinking from JSON the way
+    # Ollama does, so thinking would consume the token budget and truncate the JSON.
+    sys_prompt_no_think = system_prompt.replace("<|think|>", "").lstrip()
+
+    import concurrent.futures
+    client = Client(HF_SPACE_URL)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.predict,
+            system_prompt=sys_prompt_no_think,
+            user_prompt=user_prompt,
+            images_json=json.dumps(frames_b64),
+            api_name="/generate",
+        )
+        try:
+            raw_content = future.result(timeout=180)
+        except concurrent.futures.TimeoutError:
+            raise RuntimeError("HF Space timed out after 180s")
+
+    logger.info(f"HF Space raw content (first 300 chars): {raw_content[:300]!r}")
+    return raw_content, ""
+
+
 def call_gemma4(
     metrics: GaitMetrics,
     frames_b64: list[str],
@@ -337,7 +425,8 @@ def call_gemma4(
     session_number: int
 ) -> AnalysisResponse:
     """
-    Call Gemma 4:e4b via Ollama with frames + metrics.
+    Call Gemma 4 E4B with frames + metrics.
+    Routes to Ollama or HF Space based on INFERENCE_BACKEND.
     Severity is computed deterministically and used to filter the exercise
     library before the LLM ever sees it.
     """
@@ -347,62 +436,33 @@ def call_gemma4(
     safety = _safety_for(lang)
 
     logger.info(
-        f"Severity tier: {severity}, symmetry band: {sym_band}, "
-        f"library size after filter: {len(library)}"
+        f"Backend: {INFERENCE_BACKEND} | Severity: {severity} | "
+        f"Symmetry band: {sym_band} | Library size: {len(library)}"
     )
 
     system_prompt = build_system_prompt(lang)
     user_prompt = build_user_prompt(metrics, age, knee, severity, library)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt, "images": frames_b64},
-    ]
-
-    logger.info(
-        f"Messages built for Gemma 4. System prompt {(system_prompt)}, "
-        f"User prompt: {(user_prompt)}, Number of images: {len(frames_b64)}"
-    )
-
     try:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(
-                ollama.chat,
-                model=OLLAMA_MODEL,
-                messages=messages,
-                format="json",
-                options={
-                    "temperature": 0.4,
-                    "top_p": 0.9,
-                    "top_k": 40,
-                    "seed": 42,
-                    "num_predict": 2500,
-                    "num_ctx": 16384,
-                },
-            )
-            try:
-                response = future.result(timeout=180)
-            except concurrent.futures.TimeoutError:
-                raise RuntimeError("Ollama timed out after 180s — model may be running on CPU only")
+        if INFERENCE_BACKEND == "hf_space":
+            raw_content, thinking = _call_via_hf_space(system_prompt, user_prompt, frames_b64)
+        else:
+            raw_content, thinking = _call_via_ollama(system_prompt, user_prompt, frames_b64)
 
-        logger.info(f"Raw response from Ollama: {response}")
-        thinking = response["message"].get("thinking", "")
-        raw_content = response["message"]["content"]
+        # Prefer the LAST ```json ... ``` block (skips any thinking that leaked through),
+        # then fall back to the widest {...} span.
+        code_blocks = re.findall(r'```json\s*(\{.*?\})\s*```', raw_content, re.DOTALL)
+        if code_blocks:
+            json_str = code_blocks[-1]
+        else:
+            clean = re.sub(r'```json\s*|\s*```', '', raw_content).strip()
+            m = re.search(r'\{.*\}', clean, re.DOTALL)
+            if not m:
+                logger.error(f"No JSON found in Gemma response. Full response: {raw_content!r}")
+                raise ValueError("No JSON found in response")
+            json_str = m.group()
 
-        if response.get("done_reason", "") == "length":
-            logger.warning("Gemma hit num_predict limit — response may be truncated")
-
-        logger.info(f"Raw Gemma content (first 500 chars): {raw_content[:500]!r}")
-
-        clean = re.sub(r'```json\s*|\s*```', '', raw_content).strip()
-        json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)?\}', clean, re.DOTALL) \
-                     or re.search(r'\{.*\}', clean, re.DOTALL)
-        if not json_match:
-            logger.error(f"No JSON found in Gemma response. Full response: {raw_content!r}")
-            raise ValueError("No JSON found in response")
-
-        data = json.loads(json_match.group())
+        data = json.loads(json_str)
 
         # ----- Exercise selection -----
         # Restrict the LLM's selection to the severity-filtered library so it
