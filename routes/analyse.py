@@ -1,4 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form
+from typing import Optional
 
 from models import AnalysisResponse
 from handlers.analyse_handler import handle_analyse
@@ -8,21 +9,35 @@ router = APIRouter()
 
 @router.post("/analyse", response_model=AnalysisResponse)
 async def analyse_walk(
-    video: UploadFile = File(...),
+    video_frontal: Optional[UploadFile] = File(None),
+    video_sagittal: Optional[UploadFile] = File(None),
+    video: Optional[UploadFile] = File(None),   # deprecated — returns 400 with message
     knee: str = Form("both"),
     age: str = Form("60"),
     lang: str = Form("bn"),
-    session_number: int = Form(1)
+    session_number: int = Form(1),
 ):
     """
-    Core endpoint. Receives the walking video + patient profile,
-    runs MediaPipe + Gemma 4, returns the full gait report.
+    Core endpoint. Receives two walking videos + patient profile,
+    runs dual-video MediaPipe + Gemma, returns the full gait report.
 
     Form fields:
-    - video: MP4 video of the patient walking
-    - knee: "left" | "right" | "both"
-    - age: patient age as string
-    - lang: "bn" (Bengali) | "hi" (Hindi) | "en" (English)
+    - video_frontal:  MP4 — patient walking toward/away from camera
+    - video_sagittal: MP4 — patient walking across frame, full side profile
+    - knee:           "left" | "right" | "both"
+    - age:            patient age as string
+    - lang:           "bn" (Bengali) | "hi" (Hindi) | "en" (English)
     - session_number: session index shown in the app
+
+    Deprecated:
+    - video: returns HTTP 400 with deprecation message
     """
-    return await handle_analyse(video, knee, age, lang, session_number)
+    return await handle_analyse(
+        video_frontal=video_frontal,
+        video_sagittal=video_sagittal,
+        video_deprecated=video,
+        knee=knee,
+        age=age,
+        lang=lang,
+        session_number=session_number,
+    )

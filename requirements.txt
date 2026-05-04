@@ -1,5 +1,6 @@
 # --- Direct dependencies ---
 fastapi==0.115.0
+scipy>=1.13.0
 uvicorn==0.30.6
 python-multipart==0.0.12
 mediapipe==0.10.14

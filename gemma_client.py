@@ -84,7 +84,10 @@ def assess_severity(metrics: GaitMetrics) -> str:
     """
     Classify gait severity from MediaPipe metrics.
 
-    Severe triggers (any one is enough):
+    KL-proxy grade (set by dual-video pipeline) takes precedence when available.
+    Legacy heuristics act as fallback for backward compatibility.
+
+    Severe triggers (legacy, any one is enough):
       - symmetry_score < 65
       - trunk_lean_angle > 8°
       - knee_angle_diff > 15°
@@ -93,6 +96,12 @@ def assess_severity(metrics: GaitMetrics) -> str:
     Moderate: symmetry 65-79, trunk lean 4-8°, or knee_angle_diff 8-15°
     Mild:     everything else
     """
+    # KL-proxy grade from dual-video pipeline takes precedence
+    kl = getattr(metrics, "kl_proxy_grade", None)
+    if kl:
+        return {"kl_0": "mild", "kl_1": "mild", "kl_2": "moderate",
+                "kl_3": "severe", "kl_4": "severe"}.get(kl, "moderate")
+
     sym = metrics.symmetry_score
     lean = metrics.trunk_lean_angle or 0
     diff = metrics.knee_angle_diff or 0
