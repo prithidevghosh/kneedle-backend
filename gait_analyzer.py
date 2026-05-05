@@ -151,7 +151,11 @@ def detect_heel_strikes(ankle_y: list, visibility: list, sample_fps: float = _TA
         return []
     smoothed = _smooth(ankle_y)
     min_distance = max(3, int(round(sample_fps * 0.35)))
-    peaks, _ = find_peaks(smoothed, distance=min_distance, prominence=0.01)
+    # Prominence 0.03 (3% of frame height) discards MediaPipe tracking jitter
+    # while keeping real heel-strike excursions (5-10% of frame). At 0.01 the
+    # detector was emitting 2-3 phantom strikes per real one, which inflated
+    # cadence into the 200+ range and broke every temporal metric downstream.
+    peaks, _ = find_peaks(smoothed, distance=min_distance, prominence=0.03)
     return [int(p) for p in peaks if visibility[p] > _MIN_LANDMARK_VIS]
 
 
@@ -482,11 +486,14 @@ def _extract_frontal(fro: dict) -> dict:
                 vvt_l.append(_compute_vvt(lm[23], lm[25], lm[27]))
                 fppa_l.append(calculate_angle(lm[23], lm[25], lm[27]))
 
-        if phase_r_f.get(si) == "mid_stance":
+        # Pelvic obliquity ALSO requires frontal alignment — when the pelvis
+        # rotates toward the depth axis, |dx| collapses and arctan2(dy, |dx|)
+        # explodes toward 90°, falsely tripping trendelenburg.
+        if frontal_aligned and phase_r_f.get(si) == "mid_stance":
             if lm[23].visibility > _MIN_LANDMARK_VIS and lm[24].visibility > _MIN_LANDMARK_VIS:
                 pelvic_r_ms.append(_pelvic_obliquity(lm[23], lm[24]))
 
-        if phase_l_f.get(si) == "mid_stance":
+        if frontal_aligned and phase_l_f.get(si) == "mid_stance":
             if lm[23].visibility > _MIN_LANDMARK_VIS and lm[24].visibility > _MIN_LANDMARK_VIS:
                 pelvic_l_ms.append(_pelvic_obliquity(lm[23], lm[24]))
 
@@ -503,7 +510,13 @@ def _extract_frontal(fro: dict) -> dict:
             trunk_dirs.append("right" if dx > 0.01 else ("left" if dx < -0.01 else "neutral"))
 
     all_obliq = pelvic_r_ms + pelvic_l_ms
-    pelvic_obliq = round(max(abs(a) for a in all_obliq), 1) if all_obliq else 0.0
+    # Use the 75th percentile of |obliquity| rather than max — a single
+    # mistracked frame should not override an otherwise level pelvis.
+    if all_obliq:
+        abs_obliq = sorted(abs(a) for a in all_obliq)
+        pelvic_obliq = round(float(np.percentile(abs_obliq, 75)), 1)
+    else:
+        pelvic_obliq = 0.0
     trendelenburg = pelvic_obliq > 10.0
 
     trunk_lean = round(float(np.mean(trunk_lat)), 1) if trunk_lat else 0.0
@@ -610,17 +623,25 @@ def _compute_kl_proxy(params: GaitParams) -> tuple[float, str, list[str]]:
                 score += 2; flags.append(f"{side}_loading_response_absent")
             elif knee.loading_response_peak < 10:
                 score += 1; flags.append(f"{side}_loading_response_reduced")
+        # Swing flexion thresholds calibrated to MediaPipe single-camera 2D,
+        # not to lab marker-based 3D. Validation studies on healthy subjects
+        # show ~25-40° peak flexion via MediaPipe vs ~60° via marker capture,
+        # so the lab-derived thresholds (35/45) generated bilateral severe
+        # flags on every healthy walker.
         if knee.peak_swing_flexion is not None:
-            if knee.peak_swing_flexion < 35:
+            if knee.peak_swing_flexion < 18:
                 score += 2; flags.append(f"{side}_swing_flexion_severe")
-            elif knee.peak_swing_flexion < 45:
+            elif knee.peak_swing_flexion < 28:
                 score += 1; flags.append(f"{side}_swing_flexion_reduced")
         if knee.extension_lag is not None and knee.extension_lag > 10:
             score += 1; flags.append(f"{side}_flexion_contracture")
 
-    if abs(params.right_varus_valgus_thrust) > 5 or abs(params.left_varus_valgus_thrust) > 5:
+    # VVT is in % of leg length. Q-angle anatomy and small camera-perspective
+    # error easily produce 3-5% deviation in healthy subjects, so the band
+    # has to sit above that.
+    if abs(params.right_varus_valgus_thrust) > 8 or abs(params.left_varus_valgus_thrust) > 8:
         score += 2; flags.append("significant_varus_valgus_thrust")
-    elif abs(params.right_varus_valgus_thrust) > 2 or abs(params.left_varus_valgus_thrust) > 2:
+    elif abs(params.right_varus_valgus_thrust) > 5 or abs(params.left_varus_valgus_thrust) > 5:
         score += 1; flags.append("mild_varus_valgus_thrust")
 
     if params.trendelenburg_flag:
@@ -634,9 +655,18 @@ def _compute_kl_proxy(params: GaitParams) -> tuple[float, str, list[str]]:
     if abs(params.fppa_right) > 15 or abs(params.fppa_left) > 15:
         score += 1; flags.append("fppa_deviation")
 
-    # Temporal metrics are only trustworthy with enough complete cycles —
-    # below 3 cycles a single mistracked stride dominates the average.
-    if params.gait_cycles_detected >= 3:
+    # Temporal metrics need MIN strikes per side, not max. The previous
+    # `gait_cycles_detected = max(len(stride_r), len(stride_l))` gate let
+    # asymmetry fire when one side had 3 strikes and the other only 1
+    # (i.e. 1 vs 3 stride comparison — pure noise). Require ≥3 strikes
+    # per side ⇒ ≥2 strides per side for a meaningful comparison. Also
+    # cap on physiological plausibility — cadence>180 or double-support>50%
+    # is almost certainly false-peak heel-strike detection, not pathology.
+    min_strikes = min(params.heel_strike_events_right, params.heel_strike_events_left)
+    cadence_plausible = 40 <= params.cadence <= 180
+    ds_plausible = params.double_support_ratio <= 50
+
+    if min_strikes >= 3 and cadence_plausible and ds_plausible:
         if params.double_support_ratio > 35:
             score += 2; flags.append("high_double_support")
         elif params.double_support_ratio > 28:
