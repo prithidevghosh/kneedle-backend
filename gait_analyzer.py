@@ -28,6 +28,22 @@ from models import GaitMetrics
 
 mp_pose = mp.solutions.pose
 
+# ─── Pipeline tuning constants ────────────────────────────────────────────────
+# Effective per-second sample rate after frame skipping. 30 fps gives ~30 frames
+# per gait cycle, enough for the 10%-wide loading_response window to land 2-3
+# samples per cycle.
+_TARGET_SAMPLE_FPS = 30.0
+
+# Minimum mean lower-body landmark visibility for a frame to count as analysed.
+# Below this MediaPipe is too unsure to feed clinical metrics.
+_MIN_FRAME_CONFIDENCE = 0.6
+
+# Minimum per-landmark visibility for that landmark to participate in an angle
+# calculation. Lower than the frame floor since one bad landmark hurts less than
+# a frame full of bad landmarks.
+_MIN_LANDMARK_VIS = 0.5
+
+
 # ─── Gait phase boundaries (% of stride from heel strike) ─────────────────────
 _PHASES = [
     (0,   10,  "loading_response"),
@@ -94,11 +110,14 @@ class GaitParams:
 # ─── Geometry helpers ──────────────────────────────────────────────────────────
 
 def calculate_angle(a, b, c) -> float:
-    """Angle at B in degrees (0-180) given three landmarks."""
-    a = np.array([a.x, a.y, a.z])
-    b = np.array([b.x, b.y, b.z])
-    c = np.array([c.x, c.y, c.z])
-    ba, bc = a - b, c - b
+    """Angle at B in degrees (0-180) given three landmarks.
+
+    Uses 2D image-plane projection (x, y only). MediaPipe's z estimate is
+    derived from a single camera and is too noisy for clinical angle math —
+    including it produced impossible joint angles (e.g. 122° in stance).
+    """
+    ba = np.array([a.x - b.x, a.y - b.y])
+    bc = np.array([c.x - b.x, c.y - b.y])
     cos = np.dot(ba, bc) / (np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-8)
     return round(math.degrees(math.acos(np.clip(cos, -1.0, 1.0))), 1)
 
@@ -121,13 +140,19 @@ def _smooth(series: list, window: int = 5) -> list:
 
 # ─── Gait cycle segmentation ───────────────────────────────────────────────────
 
-def detect_heel_strikes(ankle_y: list, visibility: list) -> list[int]:
-    """Find heel-strike events as peaks in ankle-Y series (image coords, Y↓)."""
+def detect_heel_strikes(ankle_y: list, visibility: list, sample_fps: float = _TARGET_SAMPLE_FPS) -> list[int]:
+    """Find heel-strike events as peaks in ankle-Y series (image coords, Y↓).
+
+    `sample_fps` is the effective per-second rate of the input series so the
+    minimum-distance constraint scales correctly. 0.35 s ≈ ~170 strikes/min/foot
+    upper bound, which is well above human cadence.
+    """
     if len(ankle_y) < 3:
         return []
     smoothed = _smooth(ankle_y)
-    peaks, _ = find_peaks(smoothed, distance=8, prominence=0.01)
-    return [int(p) for p in peaks if visibility[p] > 0.5]
+    min_distance = max(3, int(round(sample_fps * 0.35)))
+    peaks, _ = find_peaks(smoothed, distance=min_distance, prominence=0.01)
+    return [int(p) for p in peaks if visibility[p] > _MIN_LANDMARK_VIS]
 
 
 def _label_phases(n_frames: int, hs_indices: list[int]) -> dict[int, str]:
@@ -155,7 +180,8 @@ def _run_mediapipe(video_path: str) -> dict:
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    sample_interval = max(1, int(fps / 6))
+    sample_interval = max(1, int(round(fps / _TARGET_SAMPLE_FPS)))
+    effective_fps = fps / sample_interval
 
     frames_data: list[dict] = []
     confidences: list[float] = []
@@ -192,10 +218,13 @@ def _run_mediapipe(video_path: str) -> dict:
                 continue
 
             lm = result.pose_landmarks.landmark
-            conf = float(np.mean([
-                lm[25].visibility, lm[26].visibility,
-                lm[27].visibility, lm[28].visibility,
-            ]))
+            # Per-side mean visibility (hip + knee + ankle). In a sagittal view
+            # the far side is occluded, so taking the global mean would reject
+            # frames where the camera-side leg is perfectly tracked. Use the
+            # better-visible side as the frame confidence instead.
+            right_vis = float(np.mean([lm[24].visibility, lm[26].visibility, lm[28].visibility]))
+            left_vis  = float(np.mean([lm[23].visibility, lm[25].visibility, lm[27].visibility]))
+            conf = max(right_vis, left_vis)
             confidences.append(conf)
             frames_data.append({
                 "frame_idx": frame_idx,
@@ -208,13 +237,14 @@ def _run_mediapipe(video_path: str) -> dict:
 
     cap.release()
 
-    frames_analyzed = sum(1 for f in frames_data if f["landmarks"] and f["confidence"] >= 0.4)
+    frames_analyzed = sum(1 for f in frames_data if f["landmarks"] and f["confidence"] >= _MIN_FRAME_CONFIDENCE)
     frames_skipped = len(frames_data) - frames_analyzed
     mean_conf = float(np.mean(confidences)) if confidences else 0.0
 
     return {
         "frames": frames_data,
         "fps": fps,
+        "effective_fps": effective_fps,
         "total_frames": total_frames,
         "duration_sec": total_frames / fps if fps > 0 else 0.0,
         "frames_analyzed": frames_analyzed,
@@ -227,12 +257,14 @@ def _run_mediapipe(video_path: str) -> dict:
 
 def _extract_sagittal(sag: dict) -> dict:
     frames = sag["frames"]
+    sample_fps = sag.get("effective_fps", _TARGET_SAMPLE_FPS)
 
     def _ankle_series(lm_idx: int):
         ys, vis = [], []
         for f in frames:
             lm = f["landmarks"]
-            if lm and f["confidence"] >= 0.4:
+            if (lm and f["confidence"] >= _MIN_FRAME_CONFIDENCE
+                    and lm[lm_idx].visibility > _MIN_LANDMARK_VIS):
                 ys.append(lm[lm_idx].y)
                 vis.append(lm[lm_idx].visibility)
             else:
@@ -240,8 +272,8 @@ def _extract_sagittal(sag: dict) -> dict:
                 vis.append(0.0)
         return ys, vis
 
-    hs_right = detect_heel_strikes(*_ankle_series(28))
-    hs_left  = detect_heel_strikes(*_ankle_series(27))
+    hs_right = detect_heel_strikes(*_ankle_series(28), sample_fps=sample_fps)
+    hs_left  = detect_heel_strikes(*_ankle_series(27), sample_fps=sample_fps)
     phase_r  = _label_phases(len(frames), hs_right)
     phase_l  = _label_phases(len(frames), hs_left)
 
@@ -258,29 +290,45 @@ def _extract_sagittal(sag: dict) -> dict:
 
     for si, f in enumerate(frames):
         lm = f["landmarks"]
-        if not lm or f["confidence"] < 0.4:
+        if not lm or f["confidence"] < _MIN_FRAME_CONFIDENCE:
             continue
 
-        r_knee = calculate_angle(lm[24], lm[26], lm[28])
-        l_knee = calculate_angle(lm[23], lm[25], lm[27])
-        knee_all["right"].append(r_knee)
-        knee_all["left"].append(l_knee)
+        # Store knee values as clinical FLEXION (0° = full extension, larger =
+        # more bend), so KL thresholds and "extension lag" semantics match
+        # standard biomechanics references.
+        # Per-side visibility gating: in a sagittal video only one leg is
+        # facing the camera; recording the occluded side would feed garbage
+        # into phase angles and KL scoring.
+        r_visible = (lm[24].visibility > _MIN_LANDMARK_VIS
+                     and lm[26].visibility > _MIN_LANDMARK_VIS
+                     and lm[28].visibility > _MIN_LANDMARK_VIS)
+        l_visible = (lm[23].visibility > _MIN_LANDMARK_VIS
+                     and lm[25].visibility > _MIN_LANDMARK_VIS
+                     and lm[27].visibility > _MIN_LANDMARK_VIS)
 
-        if si in phase_r:
-            knee_by_phase["right"][phase_r[si]].append(r_knee)
-        if si in phase_l:
-            knee_by_phase["left"][phase_l[si]].append(l_knee)
+        if r_visible:
+            r_knee = 180.0 - calculate_angle(lm[24], lm[26], lm[28])
+            knee_all["right"].append(r_knee)
+            if si in phase_r:
+                knee_by_phase["right"][phase_r[si]].append(r_knee)
+
+        if l_visible:
+            l_knee = 180.0 - calculate_angle(lm[23], lm[25], lm[27])
+            knee_all["left"].append(l_knee)
+            if si in phase_l:
+                knee_by_phase["left"][phase_l[si]].append(l_knee)
 
         # Hip extension (terminal stance, right side as primary)
         if phase_r.get(si) == "terminal_stance":
-            if lm[24].visibility > 0.4 and lm[26].visibility > 0.4:
+            if lm[24].visibility > _MIN_LANDMARK_VIS and lm[26].visibility > _MIN_LANDMARK_VIS:
                 dx = lm[26].x - lm[24].x
                 dy = abs(lm[26].y - lm[24].y) + 1e-8
                 hip_ext_vals.append(math.degrees(math.atan2(abs(dx), dy)))
 
         # Ankle dorsiflexion (mid_stance, right side)
         if phase_r.get(si) == "mid_stance":
-            if lm[26].visibility > 0.4 and lm[28].visibility > 0.4 and lm[32].visibility > 0.4:
+            if (lm[26].visibility > _MIN_LANDMARK_VIS and lm[28].visibility > _MIN_LANDMARK_VIS
+                    and lm[32].visibility > _MIN_LANDMARK_VIS):
                 ankle_dors_vals.append(calculate_angle(lm[26], lm[28], lm[32]))
 
         # Trunk anterior lean (sagittal, all frames)
@@ -299,12 +347,16 @@ def _extract_sagittal(sag: dict) -> dict:
         hip_x_series.append((f["time"], hip_x, hip_ankle_dist))
 
     def _build_kpa(side: str) -> KneePhaseAngles:
+        # All values in flexion units (0° = straight leg, larger = more bend).
         kp = knee_by_phase[side]
         lr = _safe_mean(kp["loading_response"])
         ms = _safe_mean(kp["mid_stance"])
         swing_vals = kp["initial_swing"] + kp["mid_swing"]
+        # Peak swing flexion = most-bent frame in swing → max(flexion).
         sw = round(float(max(swing_vals)), 1) if swing_vals else None
         all_v = knee_all[side]
+        # Extension lag = least-bent frame across the cycle. Healthy ≈ 0-2°;
+        # >10° indicates the knee never fully straightens (flexion contracture).
         ext_lag = round(float(min(all_v)), 1) if all_v else None
         rd = round(sw - ms, 1) if sw is not None and ms is not None else None
         avg = round(float(np.mean(all_v)), 1) if all_v else 0.0
@@ -343,36 +395,45 @@ def _extract_sagittal(sag: dict) -> dict:
 # ─── Frontal-view analysis ─────────────────────────────────────────────────────
 
 def _compute_vvt(hip, knee, ankle) -> float:
-    """Signed lateral deviation of knee from hip-ankle line × 100."""
+    """Signed lateral deviation of knee from hip-ankle line, expressed as
+    percent of leg length so the value is camera-distance invariant."""
     h = np.array([hip.x, hip.y])
     k = np.array([knee.x, knee.y])
     a = np.array([ankle.x, ankle.y])
     ha = a - h
     hk = k - h
-    denom = np.dot(ha, ha)
-    if denom < 1e-10:
+    leg_len_sq = float(np.dot(ha, ha))
+    if leg_len_sq < 1e-10:
         return 0.0
-    proj = (np.dot(hk, ha) / denom) * ha
+    leg_len = math.sqrt(leg_len_sq)
+    proj = (np.dot(hk, ha) / leg_len_sq) * ha
     dev = hk - proj
     sign = float(np.sign(float(np.cross(ha, hk))))
-    return round(sign * float(np.linalg.norm(dev)) * 100, 2)
+    return round(sign * float(np.linalg.norm(dev)) / leg_len * 100, 2)
 
 
 def _pelvic_obliquity(left_hip, right_hip) -> float:
-    return float(np.degrees(np.arctan2(
-        right_hip.y - left_hip.y,
-        right_hip.x - left_hip.x,
-    )))
+    """Pelvic tilt in degrees: 0 = level, ±90 = vertical pelvis.
+
+    Uses |dx| in the denominator so the sign of dx (which depends on whether
+    the subject is facing the camera or walking away) does not flip the angle
+    into the ±180° quadrant. Result range is [-90°, +90°].
+    """
+    dy = right_hip.y - left_hip.y
+    dx = abs(right_hip.x - left_hip.x) + 1e-8
+    return float(np.degrees(np.arctan2(dy, dx)))
 
 
 def _extract_frontal(fro: dict) -> dict:
     frames = fro["frames"]
+    sample_fps = fro.get("effective_fps", _TARGET_SAMPLE_FPS)
 
     def _ankle_series(lm_idx: int):
         ys, vis = [], []
         for f in frames:
             lm = f["landmarks"]
-            if lm and f["confidence"] >= 0.4:
+            if (lm and f["confidence"] >= _MIN_FRAME_CONFIDENCE
+                    and lm[lm_idx].visibility > _MIN_LANDMARK_VIS):
                 ys.append(lm[lm_idx].y)
                 vis.append(lm[lm_idx].visibility)
             else:
@@ -380,8 +441,8 @@ def _extract_frontal(fro: dict) -> dict:
                 vis.append(0.0)
         return ys, vis
 
-    hs_right_f = detect_heel_strikes(*_ankle_series(28))
-    hs_left_f  = detect_heel_strikes(*_ankle_series(27))
+    hs_right_f = detect_heel_strikes(*_ankle_series(28), sample_fps=sample_fps)
+    hs_left_f  = detect_heel_strikes(*_ankle_series(27), sample_fps=sample_fps)
     phase_r_f  = _label_phases(len(frames), hs_right_f)
     phase_l_f  = _label_phases(len(frames), hs_left_f)
 
@@ -400,28 +461,38 @@ def _extract_frontal(fro: dict) -> dict:
 
     for si, f in enumerate(frames):
         lm = f["landmarks"]
-        if not lm or f["confidence"] < 0.4:
+        if not lm or f["confidence"] < _MIN_FRAME_CONFIDENCE:
             continue
 
-        if phase_r_f.get(si) == "loading_response":
-            if all(lm[i].visibility > 0.4 for i in (24, 26, 28)):
+        # FPPA / VVT are only meaningful when the subject is squarely facing
+        # (or directly away from) the camera. If they're walking diagonally,
+        # sagittal-plane motion projects into the frontal image and inflates
+        # both metrics. Hip-line width in image space is a cheap proxy for
+        # frontal alignment; <0.08 (≈8% of frame width) means the pelvis is
+        # heavily rotated and we skip frontal-plane angle collection.
+        hip_line_width = abs(lm[24].x - lm[23].x)
+        frontal_aligned = hip_line_width >= 0.08
+
+        if frontal_aligned and phase_r_f.get(si) == "loading_response":
+            if all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (24, 26, 28)):
                 vvt_r.append(_compute_vvt(lm[24], lm[26], lm[28]))
                 fppa_r.append(calculate_angle(lm[24], lm[26], lm[28]))
-        if phase_l_f.get(si) == "loading_response":
-            if all(lm[i].visibility > 0.4 for i in (23, 25, 27)):
+        if frontal_aligned and phase_l_f.get(si) == "loading_response":
+            if all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (23, 25, 27)):
                 vvt_l.append(_compute_vvt(lm[23], lm[25], lm[27]))
                 fppa_l.append(calculate_angle(lm[23], lm[25], lm[27]))
 
         if phase_r_f.get(si) == "mid_stance":
-            if lm[23].visibility > 0.4 and lm[24].visibility > 0.4:
+            if lm[23].visibility > _MIN_LANDMARK_VIS and lm[24].visibility > _MIN_LANDMARK_VIS:
                 pelvic_r_ms.append(_pelvic_obliquity(lm[23], lm[24]))
 
         if phase_l_f.get(si) == "mid_stance":
-            if lm[23].visibility > 0.4 and lm[24].visibility > 0.4:
+            if lm[23].visibility > _MIN_LANDMARK_VIS and lm[24].visibility > _MIN_LANDMARK_VIS:
                 pelvic_l_ms.append(_pelvic_obliquity(lm[23], lm[24]))
 
-        # Trunk lateral lean — mid_stance frames only
-        if phase_r_f.get(si) == "mid_stance" or phase_l_f.get(si) == "mid_stance":
+        # Trunk lateral lean — mid_stance frames, frontal-aligned only.
+        if frontal_aligned and (phase_r_f.get(si) == "mid_stance"
+                                or phase_l_f.get(si) == "mid_stance"):
             sh_x = (lm[11].x + lm[12].x) / 2
             hp_x = (lm[23].x + lm[24].x) / 2
             sh_y = (lm[11].y + lm[12].y) / 2
@@ -558,19 +629,24 @@ def _compute_kl_proxy(params: GaitParams) -> tuple[float, str, list[str]]:
     if params.trunk_lateral_lean_deg > 8:
         score += 1; flags.append("significant_trunk_lean")
 
-    if abs(params.fppa_right) > 6 or abs(params.fppa_left) > 6:
+    # Threshold accounts for anatomical Q-angle (12-20° in healthy adults)
+    # plus camera-perspective error. Only flag deviations clearly outside that.
+    if abs(params.fppa_right) > 15 or abs(params.fppa_left) > 15:
         score += 1; flags.append("fppa_deviation")
 
-    if params.double_support_ratio > 35:
-        score += 2; flags.append("high_double_support")
-    elif params.double_support_ratio > 28:
-        score += 1; flags.append("elevated_double_support")
+    # Temporal metrics are only trustworthy with enough complete cycles —
+    # below 3 cycles a single mistracked stride dominates the average.
+    if params.gait_cycles_detected >= 3:
+        if params.double_support_ratio > 35:
+            score += 2; flags.append("high_double_support")
+        elif params.double_support_ratio > 28:
+            score += 1; flags.append("elevated_double_support")
 
-    if params.stride_time_asymmetry > 15:
-        score += 1; flags.append("high_stride_asymmetry")
+        if params.stride_time_asymmetry > 15:
+            score += 1; flags.append("high_stride_asymmetry")
 
-    if params.cadence < 70:
-        score += 1; flags.append("low_cadence")
+        if params.cadence < 70:
+            score += 1; flags.append("low_cadence")
 
     if params.hip_extension_terminal_stance is not None and params.hip_extension_terminal_stance < 5:
         score += 1; flags.append("reduced_hip_extension")

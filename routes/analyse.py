@@ -1,8 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, Form
 from typing import Optional
-
+import logging
 from models import AnalysisResponse
 from handlers.analyse_handler import handle_analyse
+
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -32,7 +35,7 @@ async def analyse_walk(
     Deprecated:
     - video: returns HTTP 400 with deprecation message
     """
-    return await handle_analyse(
+    analysis_result = await handle_analyse(
         video_frontal=video_frontal,
         video_sagittal=video_sagittal,
         video_deprecated=video,
@@ -41,3 +44,5 @@ async def analyse_walk(
         lang=lang,
         session_number=session_number,
     )
+    logger.info("Gait analysis completed. complete response: %s", analysis_result)
+    return analysis_result
