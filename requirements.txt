@@ -38,3 +38,12 @@ flatbuffers==25.12.19
 
 # --- Misc ---
 packaging==26.2
+
+# --- Voice assistant (WebSocket /voice/chat) ---
+# STT: faster-whisper runs Whisper via CTranslate2 — ~5x faster than openai-whisper.
+# Multilingual auto-detect across 99 languages (Bengali, Hindi, English supported).
+faster-whisper>=1.0.3
+# TTS: Microsoft Edge's free neural TTS — no API key, supports bn-IN, hi-IN, en-IN voices.
+edge-tts>=6.1.12
+# WebSocket transport for FastAPI/Starlette.
+websockets>=12.0

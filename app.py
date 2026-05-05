@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routes.analyse import router as analyse_router
 from routes.diagnostics import router as diagnostics_router
+from routes.voice_chat import router as voice_chat_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,3 +36,4 @@ app.add_middleware(
 
 app.include_router(analyse_router)
 app.include_router(diagnostics_router)
+app.include_router(voice_chat_router)
