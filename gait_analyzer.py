@@ -19,6 +19,8 @@ import numpy as np
 import mediapipe as mp
 import math
 import base64
+import os
+import shutil
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Optional
@@ -27,6 +29,12 @@ from scipy.signal import find_peaks
 from models import GaitMetrics
 
 mp_pose = mp.solutions.pose
+mp_drawing = mp.solutions.drawing_utils
+mp_drawing_styles = mp.solutions.drawing_styles
+
+_DEBUG_POSE = os.environ.get("DEBUG_POSE", "0") == "1"
+_DEBUG_POSE_DIR = os.environ.get("DEBUG_POSE_DIR", "/tmp/kneedle_debug")
+_DEBUG_POSE_EVERY_N = int(os.environ.get("DEBUG_POSE_EVERY_N", "15"))
 
 # ─── Pipeline tuning constants ────────────────────────────────────────────────
 # Effective per-second sample rate after frame skipping. 30 fps gives ~30 frames
@@ -80,6 +88,8 @@ class GaitParams:
     knee: dict              # {'right': KneePhaseAngles, 'left': KneePhaseAngles}
     right_varus_valgus_thrust: float = 0.0
     left_varus_valgus_thrust: float = 0.0
+    right_static_alignment_deviation: float = 0.0  # % leg-length, abs magnitude
+    left_static_alignment_deviation: float = 0.0
     pelvic_obliquity_deg: float = 0.0
     trendelenburg_flag: bool = False
     trunk_lateral_lean_deg: float = 0.0
@@ -151,11 +161,11 @@ def detect_heel_strikes(ankle_y: list, visibility: list, sample_fps: float = _TA
         return []
     smoothed = _smooth(ankle_y)
     min_distance = max(3, int(round(sample_fps * 0.35)))
-    # Prominence 0.03 (3% of frame height) discards MediaPipe tracking jitter
-    # while keeping real heel-strike excursions (5-10% of frame). At 0.01 the
-    # detector was emitting 2-3 phantom strikes per real one, which inflated
-    # cadence into the 200+ range and broke every temporal metric downstream.
-    peaks, _ = find_peaks(smoothed, distance=min_distance, prominence=0.03)
+    # 0.015 (1.5% of frame height) — lowered from 0.03 because elderly/OA patients
+    # have short shuffling steps where ankle lift is 2-4% of frame, not 5-10%.
+    # 0.01 caused phantom strikes (2-3x cadence inflation); 0.015 stays above
+    # MediaPipe jitter (~0.005) while catching low-amplitude heel strikes.
+    peaks, _ = find_peaks(smoothed, distance=min_distance, prominence=0.015)
     return [int(p) for p in peaks if visibility[p] > _MIN_LANDMARK_VIS]
 
 
@@ -176,10 +186,14 @@ def _label_phases(n_frames: int, hs_indices: list[int]) -> dict[int, str]:
 
 # ─── MediaPipe runner ──────────────────────────────────────────────────────────
 
-def _run_mediapipe(video_path: str) -> dict:
+def _run_mediapipe(video_path: str, debug_tag: str = "video") -> dict:
     """
     Run MediaPipe Pose on all sampled frames of a video.
     Returns a dict with per-frame data and aggregate metadata.
+
+    When DEBUG_POSE=1, saves annotated JPGs every DEBUG_POSE_EVERY_N sampled
+    frames to DEBUG_POSE_DIR/<debug_tag>/. Key landmarks (hip/knee/ankle) are
+    circled in a contrasting colour so visibility issues are immediately obvious.
     """
     cap = cv2.VideoCapture(video_path)
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -190,6 +204,12 @@ def _run_mediapipe(video_path: str) -> dict:
     frames_data: list[dict] = []
     confidences: list[float] = []
 
+    if _DEBUG_POSE:
+        debug_dir = os.path.join(_DEBUG_POSE_DIR, debug_tag)
+        if os.path.exists(debug_dir):
+            shutil.rmtree(debug_dir)
+        os.makedirs(debug_dir, exist_ok=True)
+
     with mp_pose.Pose(
         static_image_mode=False,
         model_complexity=1,
@@ -198,6 +218,7 @@ def _run_mediapipe(video_path: str) -> dict:
         min_tracking_confidence=0.5,
     ) as pose:
         frame_idx = 0
+        sampled_count = 0
         while cap.isOpened():
             ret, frame = cap.read()
             if not ret:
@@ -218,7 +239,13 @@ def _run_mediapipe(video_path: str) -> dict:
                     "landmarks": None,
                     "confidence": 0.0,
                 })
+                if _DEBUG_POSE and sampled_count % _DEBUG_POSE_EVERY_N == 0:
+                    annotated = frame.copy()
+                    cv2.putText(annotated, f"NO POSE  t={time_sec:.2f}s", (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                    cv2.imwrite(os.path.join(debug_dir, f"f{frame_idx:05d}_no_pose.jpg"), annotated)
                 frame_idx += 1
+                sampled_count += 1
                 continue
 
             lm = result.pose_landmarks.landmark
@@ -237,6 +264,33 @@ def _run_mediapipe(video_path: str) -> dict:
                 "landmarks": lm,
                 "confidence": conf,
             })
+
+            if _DEBUG_POSE and sampled_count % _DEBUG_POSE_EVERY_N == 0:
+                annotated = frame.copy()
+                mp_drawing.draw_landmarks(
+                    annotated,
+                    result.pose_landmarks,
+                    mp_pose.POSE_CONNECTIONS,
+                    landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style(),
+                )
+                h, w = annotated.shape[:2]
+                # Highlight hip / knee / ankle with labelled circles
+                _KEY_LM = {23: ("L-Hip", (0,255,0)), 24: ("R-Hip", (0,200,0)),
+                           25: ("L-Knee",(0,255,255)), 26: ("R-Knee",(0,200,200)),
+                           27: ("L-Ankle",(255,100,0)), 28: ("R-Ankle",(200,80,0))}
+                for idx, (label, colour) in _KEY_LM.items():
+                    pt = lm[idx]
+                    cx, cy = int(pt.x * w), int(pt.y * h)
+                    vis = pt.visibility
+                    cv2.circle(annotated, (cx, cy), 10, colour, 2)
+                    cv2.putText(annotated, f"{label} {vis:.2f}", (cx + 12, cy),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1)
+                cv2.putText(annotated, f"conf={conf:.2f}  t={time_sec:.2f}s  f={frame_idx}",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                fname = f"f{frame_idx:05d}_conf{conf:.2f}.jpg"
+                cv2.imwrite(os.path.join(debug_dir, fname), annotated)
+
+            sampled_count += 1
             frame_idx += 1
 
     cap.release()
@@ -451,6 +505,13 @@ def _extract_frontal(fro: dict) -> dict:
     phase_l_f  = _label_phases(len(frames), hs_left_f)
 
     vvt_r, vvt_l = [], []
+    # Static HKA-alignment samples — knee deviation from hip-ankle line on
+    # ANY frontal-aligned frame (not gated by loading_response). Captures
+    # structural genu varum/valgum that exists outside the brief stance
+    # impulse measured by VVT thrust. Magnitudes only (abs) so sign-flips
+    # when the patient turns around don't average to zero.
+    static_align_r: list[float] = []
+    static_align_l: list[float] = []
     fppa_r, fppa_l = [], []
     pelvic_r_ms, pelvic_l_ms = [], []
     trunk_lat, trunk_dirs = [], []
@@ -477,13 +538,17 @@ def _extract_frontal(fro: dict) -> dict:
         hip_line_width = abs(lm[24].x - lm[23].x)
         frontal_aligned = hip_line_width >= 0.08
 
-        if frontal_aligned and phase_r_f.get(si) == "loading_response":
-            if all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (24, 26, 28)):
-                vvt_r.append(_compute_vvt(lm[24], lm[26], lm[28]))
+        if frontal_aligned and all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (24, 26, 28)):
+            r_dev = _compute_vvt(lm[24], lm[26], lm[28])
+            static_align_r.append(abs(r_dev))
+            if phase_r_f.get(si) == "loading_response":
+                vvt_r.append(r_dev)
                 fppa_r.append(calculate_angle(lm[24], lm[26], lm[28]))
-        if frontal_aligned and phase_l_f.get(si) == "loading_response":
-            if all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (23, 25, 27)):
-                vvt_l.append(_compute_vvt(lm[23], lm[25], lm[27]))
+        if frontal_aligned and all(lm[i].visibility > _MIN_LANDMARK_VIS for i in (23, 25, 27)):
+            l_dev = _compute_vvt(lm[23], lm[25], lm[27])
+            static_align_l.append(abs(l_dev))
+            if phase_l_f.get(si) == "loading_response":
+                vvt_l.append(l_dev)
                 fppa_l.append(calculate_angle(lm[23], lm[25], lm[27]))
 
         # Pelvic obliquity ALSO requires frontal alignment — when the pelvis
@@ -528,6 +593,13 @@ def _extract_frontal(fro: dict) -> dict:
     return {
         "right_vvt": round(float(np.mean(vvt_r)), 2) if vvt_r else 0.0,
         "left_vvt":  round(float(np.mean(vvt_l)), 2) if vvt_l else 0.0,
+        # Median magnitude across all frontal-aligned frames — captures
+        # structural genu varum/valgum (bow-legs / knock-knees) that
+        # persists outside the loading_response window. Median is robust
+        # to a few mistracked frames; magnitudes-only avoids sign-flip
+        # cancellation when the subject reverses walking direction.
+        "right_static_alignment": round(float(np.median(static_align_r)), 2) if static_align_r else 0.0,
+        "left_static_alignment":  round(float(np.median(static_align_l)), 2) if static_align_l else 0.0,
         "pelvic_obliquity_deg": pelvic_obliq,
         "trendelenburg_flag": trendelenburg,
         "trunk_lateral_lean_deg": trunk_lean,
@@ -644,6 +716,34 @@ def _compute_kl_proxy(params: GaitParams) -> tuple[float, str, list[str]]:
     elif abs(params.right_varus_valgus_thrust) > 5 or abs(params.left_varus_valgus_thrust) > 5:
         score += 1; flags.append("mild_varus_valgus_thrust")
 
+    # Structural varus/valgus deformity — knee deviation from the hip-ankle
+    # line that PERSISTS across the whole gait, not just the loading impulse.
+    # KL grade 3-4 OA almost always presents with bone-loss-driven static
+    # deformity that thrust alone misses (especially on patients with sparse
+    # heel strikes / slow shuffling gait, where loading_response windows
+    # collect zero VVT samples). VVT% ≈ HKA_angle_deg × 0.87, so 4/6/10%
+    # corresponds to ~4.5°/~7°/~11.5° HKA deviation (mild/moderate/severe).
+    # Weighted heavily because static HKA deformity is one of the strongest
+    # single radiographic correlates of OA — visible varus/valgus in stance
+    # implies medial/lateral compartment narrowing and is the defining sign
+    # of KL grade 3-4. Other temporal flags (cadence, double_support) are
+    # gated behind heel-strike count and silently zero-out on slow shuffling
+    # gait, so static deformity must by itself be sufficient to push the
+    # patient out of KL 0 / KL 1 territory. Score targets:
+    #   mild   (4-6%, ~4.5-7° HKA)   →  kl_1
+    #   mod    (6-10%, ~7-11.5°)     →  kl_2
+    #   severe (>10%, >~11.5°)       →  kl_3
+    max_static = max(
+        params.right_static_alignment_deviation,
+        params.left_static_alignment_deviation,
+    )
+    if max_static > 10:
+        score += 10; flags.append("severe_static_varus_valgus_deformity")
+    elif max_static > 6:
+        score += 6; flags.append("moderate_static_varus_valgus_deformity")
+    elif max_static > 4:
+        score += 4; flags.append("mild_static_varus_valgus_deformity")
+
     if params.trendelenburg_flag:
         score += 1; flags.append("trendelenburg_positive")
 
@@ -699,7 +799,13 @@ def _check_bilateral(params: GaitParams) -> bool:
         r.peak_swing_flexion is not None and l.peak_swing_flexion is not None
         and r.peak_swing_flexion < 50 and l.peak_swing_flexion < 50
     )
-    return both_lr and both_sw
+    # Bilateral structural deformity (genu varum/valgum) on both legs is itself
+    # a hallmark of bilateral OA, independent of sagittal phase angles.
+    both_static = (
+        params.right_static_alignment_deviation > 4
+        and params.left_static_alignment_deviation > 4
+    )
+    return (both_lr and both_sw) or both_static
 
 
 # ─── Key frame extraction ───────────────────────────────────────────────────────
@@ -757,13 +863,13 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
     fallback_mode = False
 
     try:
-        sag = _run_mediapipe(sagittal_path)
+        sag = _run_mediapipe(sagittal_path, debug_tag="sagittal")
         sag_results = _extract_sagittal(sag)
     except Exception:
         fallback_mode = True
 
     try:
-        fro = _run_mediapipe(frontal_path)
+        fro = _run_mediapipe(frontal_path, debug_tag="frontal")
         fro_results = _extract_frontal(fro)
     except Exception:
         fallback_mode = True
@@ -789,6 +895,8 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
         knee={"right": knee_r, "left": knee_l},
         right_varus_valgus_thrust=fro_results.get("right_vvt", 0.0),
         left_varus_valgus_thrust=fro_results.get("left_vvt", 0.0),
+        right_static_alignment_deviation=fro_results.get("right_static_alignment", 0.0),
+        left_static_alignment_deviation=fro_results.get("left_static_alignment", 0.0),
         pelvic_obliquity_deg=fro_results.get("pelvic_obliquity_deg", 0.0),
         trendelenburg_flag=fro_results.get("trendelenburg_flag", False),
         trunk_lateral_lean_deg=fro_results.get("trunk_lateral_lean_deg", 0.0),
@@ -869,6 +977,8 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
         # Frontal-view
         right_varus_valgus_thrust=params.right_varus_valgus_thrust,
         left_varus_valgus_thrust=params.left_varus_valgus_thrust,
+        right_static_alignment_deviation=params.right_static_alignment_deviation,
+        left_static_alignment_deviation=params.left_static_alignment_deviation,
         pelvic_obliquity_deg=params.pelvic_obliquity_deg,
         trendelenburg_flag=params.trendelenburg_flag,
         step_width_proxy=params.step_width_proxy,

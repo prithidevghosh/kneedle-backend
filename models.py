@@ -54,6 +54,12 @@ class GaitMetrics(BaseModel):
     # ── Frontal-view parameters ───────────────────────────────────────────────
     right_varus_valgus_thrust: float = 0.0    # signed: pos=varus, neg=valgus
     left_varus_valgus_thrust: float = 0.0
+    # Median |knee-deviation from hip-ankle line| over all frontal-aligned
+    # frames, in % of leg length. Captures structural genu varum/valgum
+    # (bow-legs / knock-knees) that persists outside the loading_response
+    # window. Magnitude only — directionless. ~4% ≈ 4.5° HKA, ~10% ≈ 11.5°.
+    right_static_alignment_deviation: float = 0.0
+    left_static_alignment_deviation: float = 0.0
     pelvic_obliquity_deg: float = 0.0         # norm <5°
     trendelenburg_flag: bool = False
     step_width_proxy: float = 0.0             # norm 0.10-0.13 normalized units
