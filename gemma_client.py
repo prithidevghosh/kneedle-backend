@@ -54,6 +54,7 @@ SAFETY_DEFAULTS = {
         "sym_good": "৮০-এর উপরে স্বাভাবিক — আপনার হাঁটার ভারসাম্য ভালো আছে।",
         "sym_fair": "৮০-এর উপরে স্বাভাবিক — আপনার স্কোর কিছুটা কম, উন্নতির সুযোগ আছে।",
         "sym_poor": "৮০-এর উপরে স্বাভাবিক — আপনার স্কোর অনেক কম, এই ব্যায়ামগুলি সাহায্য করবে।",
+        "sym_unknown": "ভিডিওতে এক পাশের পা পুরোপুরি দেখা যায়নি, তাই সিমমেট্রি স্কোর নির্ভরযোগ্যভাবে মাপা যায়নি।",
     },
     "hi": {
         "frequency": "रोज़ एक बार, २ सप्ताह तक अभ्यास करें।",
@@ -65,6 +66,7 @@ SAFETY_DEFAULTS = {
         "sym_good": "८० से ऊपर सामान्य — आपका चाल संतुलन अच्छा है।",
         "sym_fair": "८० से ऊपर सामान्य — आपका स्कोर थोड़ा कम है, सुधार की गुंजाइश है।",
         "sym_poor": "८० से ऊपर सामान्य — आपका स्कोर काफी कम है, ये व्यायाम मदद करेंगे।",
+        "sym_unknown": "वीडियो में एक तरफ का पैर पूरी तरह दिखाई नहीं दिया, इसलिए सिमेट्री स्कोर भरोसेमंद ढंग से नहीं मापा जा सका।",
     },
     "en": {
         "frequency": "Daily, once a day, for 2 weeks.",
@@ -76,6 +78,7 @@ SAFETY_DEFAULTS = {
         "sym_good": "Normal is above 80 — your gait balance is good.",
         "sym_fair": "Normal is above 80 — your score is a little low, with room to improve.",
         "sym_poor": "Normal is above 80 — your score is well below normal, these exercises will help.",
+        "sym_unknown": "One leg was partially occluded in the video, so a reliable symmetry score could not be measured.",
     },
 }
 
@@ -99,7 +102,7 @@ def assess_severity(metrics: GaitMetrics) -> str:
     # KL-proxy grade from dual-video pipeline takes precedence
     kl = getattr(metrics, "kl_proxy_grade", None)
     if kl:
-        return {"kl_0": "mild", "kl_1": "mild", "kl_2": "moderate",
+        return {"kl_0": "normal", "kl_1": "mild", "kl_2": "moderate",
                 "kl_3": "severe", "kl_4": "severe"}.get(kl, "moderate")
 
     sym = metrics.symmetry_score
@@ -122,9 +125,13 @@ def assess_severity(metrics: GaitMetrics) -> str:
 
 
 def compute_symmetry_band(score: float | None) -> str:
-    """Map raw symmetry_score (0-100) to a patient-facing band."""
+    """Map raw symmetry_score (0-100) to a patient-facing band.
+
+    Returns "unknown" when score is missing — this happens when the sagittal
+    pipeline detected per-side sample imbalance (one leg occluded) and
+    suppressed the score rather than emit a tracking-artifact asymmetry."""
     if score is None:
-        return "fair"
+        return "unknown"
     if score >= 80:
         return "good"
     if score >= 65:
@@ -133,7 +140,9 @@ def compute_symmetry_band(score: float | None) -> str:
 
 
 def filter_library_by_severity(severity: str) -> list[dict]:
-    """Return the subset of EXERCISE_LIBRARY safe for this severity tier."""
+    """Return the subset of EXERCISE_LIBRARY safe for this severity tier.
+    'normal' is treated like 'mild' — full library available, focus on
+    general conditioning rather than corrective exercises."""
     if severity == "severe":
         return [e for e in EXERCISE_LIBRARY if e["id"] not in SEVERE_EXCLUDE_IDS]
     return list(EXERCISE_LIBRARY)
@@ -178,7 +187,9 @@ in-person physiotherapy and depends on this app.
 You will be given:
 1. Several images from the patient's walking video
 2. Precise biomechanical measurements extracted by MediaPipe Pose
-3. A pre-computed severity tier (mild/moderate/severe) — TRUST IT
+3. A pre-computed severity tier (normal/mild/moderate/severe) — TRUST IT.
+   "normal" means no clinical OA signs detected — frame the response as
+   reassurance + general conditioning, not treatment.
 4. A SEVERITY-FILTERED exercise library — you may ONLY pick from this list
 
 Your job is to identify the single primary clinical finding from the
@@ -254,6 +265,9 @@ def build_user_prompt(
                     "Mix of supine and standing exercises. Avoid only deep loaded squats.",
         "mild": "MILD: Gait is largely preserved. Full library is available, "
                 "focus on whichever exercise targets the specific finding.",
+        "normal": "NORMAL: Gait shows no clinical signs of OA. Recommend general "
+                  "conditioning (quad strength, calf, hip stability) for prevention. "
+                  "Frame the response as reassurance, not treatment.",
     }[severity]
 
     return f"""PATIENT PROFILE:
@@ -508,11 +522,13 @@ def call_gemma4(
             "good": safety["sym_good"],
             "fair": safety["sym_fair"],
             "poor": safety["sym_poor"],
+            "unknown": safety["sym_unknown"],
         }[sym_band]
         sym_default_en = {
             "good": SAFETY_DEFAULTS["en"]["sym_good"],
             "fair": SAFETY_DEFAULTS["en"]["sym_fair"],
             "poor": SAFETY_DEFAULTS["en"]["sym_poor"],
+            "unknown": SAFETY_DEFAULTS["en"]["sym_unknown"],
         }[sym_band]
 
         # ----- Referral logic — severe always gets one -----
@@ -605,10 +621,12 @@ def _fallback_response(
     ]
 
     sym_meaning = {
-        "good": safety["sym_good"], "fair": safety["sym_fair"], "poor": safety["sym_poor"],
+        "good": safety["sym_good"], "fair": safety["sym_fair"],
+        "poor": safety["sym_poor"], "unknown": safety["sym_unknown"],
     }[sym_band]
     sym_meaning_en = {
-        "good": en["sym_good"], "fair": en["sym_fair"], "poor": en["sym_poor"],
+        "good": en["sym_good"], "fair": en["sym_fair"],
+        "poor": en["sym_poor"], "unknown": en["sym_unknown"],
     }[sym_band]
 
     referral_recommended = severity == "severe"

@@ -440,6 +440,11 @@ def _extract_sagittal(sag: dict) -> dict:
     return {
         "knee_right": _build_kpa("right"),
         "knee_left":  _build_kpa("left"),
+        # Per-side raw sample counts — downstream uses these to detect
+        # selection bias when one leg is occluded (sagittal far-side leg
+        # passes visibility only at extension, biasing avg_full_cycle).
+        "knee_right_n": len(knee_all["right"]),
+        "knee_left_n":  len(knee_all["left"]),
         "hip_extension_terminal_stance": _safe_mean(hip_ext_vals),
         "ankle_dorsiflexion": _safe_mean(ankle_dors_vals),
         "trunk_anterior_lean_deg": round(float(np.mean(trunk_ant_vals)), 1) if trunk_ant_vals else 0.0,
@@ -889,7 +894,22 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
     sagittal_conf = sag["confidence"] if sag else 0.0
 
     r_avg, l_avg = knee_r.avg_full_cycle, knee_l.avg_full_cycle
-    symmetry = round(max(0.0, 100.0 - abs(r_avg - l_avg) * 2.5), 1) if r_avg and l_avg else 0.0
+    # Sample-balance guard: in sagittal video, the far-side leg is occluded
+    # and MediaPipe holds visibility mostly during near-extension frames.
+    # If one side has far fewer raw samples than the other, avg_full_cycle
+    # is selection-biased toward extension on that side and the resulting
+    # asymmetry is a tracking artifact, not a clinical finding. Require
+    # ≥10 samples on each side AND the smaller side ≥40% of the larger.
+    r_n = sag_results.get("knee_right_n", 0)
+    l_n = sag_results.get("knee_left_n", 0)
+    samples_balanced = (
+        r_n >= 10 and l_n >= 10
+        and min(r_n, l_n) / max(r_n, l_n, 1) >= 0.4
+    )
+    if r_avg and l_avg and samples_balanced:
+        symmetry = round(max(0.0, 100.0 - abs(r_avg - l_avg) * 2.5), 1)
+    else:
+        symmetry = None
 
     params = GaitParams(
         knee={"right": knee_r, "left": knee_l},
@@ -911,7 +931,7 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
         stride_time_asymmetry=temporal["stride_time_asymmetry"],
         double_support_ratio=temporal["double_support_ratio"],
         gait_speed_proxy=sag_results.get("gait_speed_proxy", 0.0),
-        symmetry_score=symmetry,
+        symmetry_score=symmetry or 0.0,
         frontal_confidence=frontal_conf,
         sagittal_confidence=sagittal_conf,
         frontal_frames_analyzed=fro["frames_analyzed"] if fro else 0,
@@ -930,16 +950,22 @@ def analyse_gait_dual(frontal_path: str, sagittal_path: str) -> tuple[GaitMetric
     if bilateral:
         clinical_flags.append("bilateral_oa_pattern")
 
-    _kl_to_sev = {"kl_0": "mild", "kl_1": "mild", "kl_2": "moderate", "kl_3": "severe", "kl_4": "severe"}
+    # kl_0 with no flags = healthy. Previously this collapsed to "mild" and
+    # every healthy user saw an OA-tier label. "normal" is now its own tier;
+    # downstream (gemma_client, handler) treats it like mild for safety/library
+    # selection but reports it as healthy to the patient.
+    _kl_to_sev = {"kl_0": "normal", "kl_1": "mild", "kl_2": "moderate", "kl_3": "severe", "kl_4": "severe"}
     severity = _kl_to_sev[kl_grade]
-    if bilateral and severity == "mild":
+    if bilateral and severity in ("normal", "mild"):
         severity = "moderate"
 
     metrics = GaitMetrics(
         # Backward-compat fields
         knee_angle_right=r_avg or None,
         knee_angle_left=l_avg or None,
-        knee_angle_diff=round(abs(r_avg - l_avg), 1) if r_avg and l_avg else None,
+        # Only emit knee_angle_diff when the per-side samples were balanced
+        # — otherwise the diff reflects far-side occlusion, not asymmetry.
+        knee_angle_diff=round(abs(r_avg - l_avg), 1) if (r_avg and l_avg and samples_balanced) else None,
         symmetry_score=symmetry,
         trunk_lean_angle=fro_results.get("trunk_lateral_lean_deg"),
         trunk_lean_direction=fro_results.get("trunk_lean_direction", "neutral"),

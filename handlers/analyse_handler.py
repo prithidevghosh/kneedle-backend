@@ -108,7 +108,7 @@ async def handle_analyse(
         # KL-proxy severity takes precedence over Gemma's assess_severity heuristic
         result.severity = extra["severity"]
         # Bilateral pattern forces minimum "moderate"
-        if extra["bilateral_pattern_detected"] and result.severity == "mild":
+        if extra["bilateral_pattern_detected"] and result.severity in ("normal", "mild"):
             result.severity = "moderate"
 
         if result.thinking:
